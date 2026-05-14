@@ -37,25 +37,33 @@ ALTER TABLE asset_shares ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT
 
 ALTER TABLE asset_shares ENABLE ROW LEVEL SECURITY;
 
+-- Helper: check asset ownership without triggering RLS on vehicles/homes.
+-- SECURITY DEFINER bypasses RLS on the queried tables, breaking the circular
+-- dependency: owner_manage_shares → vehicles (shared_vehicle_select) → asset_shares.
+CREATE OR REPLACE FUNCTION user_owns_asset(p_asset_type text, p_asset_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF p_asset_type = 'vehicle' THEN
+    RETURN EXISTS (SELECT 1 FROM vehicles WHERE id = p_asset_id AND user_id = auth.uid());
+  ELSIF p_asset_type = 'home' THEN
+    RETURN EXISTS (SELECT 1 FROM homes WHERE id = p_asset_id AND user_id = auth.uid());
+  END IF;
+  RETURN FALSE;
+END;
+$$;
+
 -- 2. RLS policies for asset_shares
 -- Owner can do anything with shares they created, but only for assets they actually own.
--- WITH CHECK prevents any user from forging a share for someone else's vehicle or home
--- by requiring the referenced asset_id to be owned by auth.uid() in the real asset table.
+-- Uses user_owns_asset() (SECURITY DEFINER) to avoid the infinite recursion that occurs
+-- when the WITH CHECK queries vehicles/homes directly (those tables' policies query back
+-- to asset_shares, forming a cycle).
 DROP POLICY IF EXISTS "owner_manage_shares" ON asset_shares;
 CREATE POLICY "owner_manage_shares" ON asset_shares
   FOR ALL
   USING (owner_user_id = auth.uid())
   WITH CHECK (
     owner_user_id = auth.uid()
-    AND (
-      (asset_type = 'vehicle' AND EXISTS (
-        SELECT 1 FROM vehicles WHERE id = asset_id AND user_id = auth.uid()
-      ))
-      OR
-      (asset_type = 'home' AND EXISTS (
-        SELECT 1 FROM homes WHERE id = asset_id AND user_id = auth.uid()
-      ))
-    )
+    AND user_owns_asset(asset_type, asset_id)
   );
 
 -- Invitee can see shares assigned to them
