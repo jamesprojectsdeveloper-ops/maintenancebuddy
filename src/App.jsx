@@ -191,24 +191,15 @@ export default function App() {
       if (acceptedShares?.length) {
         const svIds = acceptedShares.filter(s => s.asset_type === "vehicle").map(s => s.asset_id);
         const shIds = acceptedShares.filter(s => s.asset_type === "home").map(s => s.asset_id);
-        const ownerIds = [...new Set(acceptedShares.map(s => s.owner_user_id))];
 
-        const [svRes, shRes, ownRes] = await Promise.all([
+        const [svRes, shRes] = await Promise.all([
           svIds.length ? supabase.from("vehicles").select("*").in("id", svIds) : { data: [] },
           shIds.length ? supabase.from("homes").select("*").in("id", shIds) : { data: [] },
-          supabase.from("profiles").select("id, full_name").in("id", ownerIds),
         ]);
 
-        const ownerMap = {};
-        (ownRes.data || []).forEach(p => {
-          if (p.full_name) ownerMap[p.id] = p.full_name.split(" ")[0];
-        });
         const shareOwnerMap = {};
         acceptedShares.forEach(s => {
-          shareOwnerMap[s.asset_id] =
-            ownerMap[s.owner_user_id]
-            || s.owner_name
-            || "Someone";
+          shareOwnerMap[s.asset_id] = s.owner_name || "Someone";
         });
 
         vehicles = [
@@ -233,12 +224,10 @@ export default function App() {
       if (pendingShares?.length) {
         const pvIds = pendingShares.filter(s => s.asset_type === "vehicle").map(s => s.asset_id);
         const phIds = pendingShares.filter(s => s.asset_type === "home").map(s => s.asset_id);
-        const ownerIds = [...new Set(pendingShares.map(s => s.owner_user_id))];
 
-        const [pvRes, phRes, ownRes] = await Promise.all([
+        const [pvRes, phRes] = await Promise.all([
           pvIds.length ? supabase.from("vehicles").select("id, nickname, year, make, model").in("id", pvIds) : { data: [] },
           phIds.length ? supabase.from("homes").select("id, nickname, home_type").in("id", phIds) : { data: [] },
-          supabase.from("profiles").select("id, full_name").in("id", ownerIds),
         ]);
 
         const assetNameMap = {};
@@ -248,17 +237,13 @@ export default function App() {
         (phRes.data || []).forEach(h => {
           assetNameMap[h.id] = h.nickname || (h.home_type === "condo" ? "Condo" : h.home_type === "townhouse" ? "Townhouse" : "Home");
         });
-        const ownerMap = {};
-        (ownRes.data || []).forEach(p => {
-          ownerMap[p.id] = p.full_name?.split(" ")[0] || "Someone";
-        });
 
         setPendingInvites(pendingShares.map(s => ({
           shareId: s.id,
           assetType: s.asset_type,
           assetId: s.asset_id,
           assetName: assetNameMap[s.asset_id] || "an asset",
-          ownerName: ownerMap[s.owner_user_id] || "Someone",
+          ownerName: s.owner_name || "Someone",
         })));
       } else {
         setPendingInvites([]);

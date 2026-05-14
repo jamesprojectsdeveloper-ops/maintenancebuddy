@@ -98,21 +98,17 @@ export default function ProfileSheet({
     if (incoming.length) {
       const vIds = incoming.filter(s => s.asset_type === "vehicle").map(s => s.asset_id);
       const hIds = incoming.filter(s => s.asset_type === "home").map(s => s.asset_id);
-      const ownerIds = [...new Set(incoming.map(s => s.owner_user_id))];
-      const [vRes2, hRes2, ownRes] = await Promise.all([
+      const [vRes2, hRes2] = await Promise.all([
         vIds.length ? supabase.from("vehicles").select("id, nickname, year, make, model").in("id", vIds) : { data: [] },
         hIds.length ? supabase.from("homes").select("id, nickname, home_type").in("id", hIds) : { data: [] },
-        supabase.from("profiles").select("id, full_name").in("id", ownerIds),
       ]);
       const nameMap = {};
       (vRes2.data || []).forEach(v => { nameMap[v.id] = v.nickname || `${v.year} ${v.make} ${v.model}`; });
       (hRes2.data || []).forEach(h => { nameMap[h.id] = h.nickname || (h.home_type === "condo" ? "Condo" : "Home"); });
-      const ownerMap = {};
-      (ownRes.data || []).forEach(p => { ownerMap[p.id] = p.full_name?.split(" ")[0] || "Someone"; });
       setSharedWithMe(incoming.map(s => ({
         ...s,
         assetLabel: nameMap[s.asset_id] || "Asset",
-        ownerName: ownerMap[s.owner_user_id] || "Someone",
+        ownerName: s.owner_name || "Someone",
         emoji: s.asset_type === "vehicle" ? "🚗" : "🏠",
       })));
     } else {

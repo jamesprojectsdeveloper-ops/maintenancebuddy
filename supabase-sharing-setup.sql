@@ -2,35 +2,16 @@
 -- Run this in your Supabase SQL Editor to enable shared asset access.
 -- Safe to run multiple times (uses IF NOT EXISTS / OR REPLACE).
 
--- 0. Allow a user to read another user's profile ONLY if they share an asset together.
---    This is least-privilege: you can see the name of someone who shared with you (or vice versa),
---    but you cannot enumerate unrelated users' profiles.
+-- 0. Drop any previously-created cross-user profile read policies.
+--    The app reads owner display names from the owner_name column on asset_shares,
+--    so no cross-user SELECT on the profiles table is required.
+--    The base "Users can manage their own profile" policy (in supabase-setup.sql)
+--    already covers self-access — that is the only profiles access needed.
 DROP POLICY IF EXISTS "profiles_read_authenticated" ON profiles;
 DROP POLICY IF EXISTS "profiles_read_shared_peers" ON profiles;
-CREATE POLICY "profiles_read_shared_peers" ON profiles
-  FOR SELECT USING (
-    -- Always allow reading your own profile
-    id = auth.uid()
-    OR
-    -- Allow reading the profile of someone who shared an asset with you
-    EXISTS (
-      SELECT 1 FROM asset_shares
-      WHERE owner_user_id = profiles.id
-        AND shared_with_user_id = auth.uid()
-        AND status = 'accepted'
-    )
-    OR
-    -- Allow reading the profile of someone you shared an asset with
-    EXISTS (
-      SELECT 1 FROM asset_shares
-      WHERE shared_with_user_id = profiles.id
-        AND owner_user_id = auth.uid()
-        AND status IN ('pending', 'accepted')
-    )
-  );
+DROP POLICY IF EXISTS "profiles_read_share_counterparty" ON profiles;
 
--- Store the owner's display name in the share record so it's always available
--- even if the profiles policy is not yet applied.
+-- Store the owner's display name in the share record so it's always available.
 ALTER TABLE asset_shares ADD COLUMN IF NOT EXISTS owner_name text;
 
 -- 1. Create asset_shares table
@@ -57,10 +38,25 @@ ALTER TABLE asset_shares ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT
 ALTER TABLE asset_shares ENABLE ROW LEVEL SECURITY;
 
 -- 2. RLS policies for asset_shares
--- Owner can do anything with shares they created
+-- Owner can do anything with shares they created, but only for assets they actually own.
+-- WITH CHECK prevents any user from forging a share for someone else's vehicle or home
+-- by requiring the referenced asset_id to be owned by auth.uid() in the real asset table.
 DROP POLICY IF EXISTS "owner_manage_shares" ON asset_shares;
 CREATE POLICY "owner_manage_shares" ON asset_shares
-  FOR ALL USING (owner_user_id = auth.uid());
+  FOR ALL
+  USING (owner_user_id = auth.uid())
+  WITH CHECK (
+    owner_user_id = auth.uid()
+    AND (
+      (asset_type = 'vehicle' AND EXISTS (
+        SELECT 1 FROM vehicles WHERE id = asset_id AND user_id = auth.uid()
+      ))
+      OR
+      (asset_type = 'home' AND EXISTS (
+        SELECT 1 FROM homes WHERE id = asset_id AND user_id = auth.uid()
+      ))
+    )
+  );
 
 -- Invitee can see shares assigned to them
 DROP POLICY IF EXISTS "invitee_view_shares" ON asset_shares;
@@ -74,7 +70,9 @@ CREATE POLICY "see_pending_by_email" ON asset_shares
     invite_email = auth.email()
   );
 
--- Allow a user to claim a pending invite sent to their email
+-- Allow a user to claim a pending invite sent to their email.
+-- WITH CHECK locks every immutable field to its original DB value so the claimant
+-- cannot pivot to a different asset, change ownership, or escalate their status.
 DROP POLICY IF EXISTS "claim_pending_invite" ON asset_shares;
 CREATE POLICY "claim_pending_invite" ON asset_shares
   FOR UPDATE
@@ -84,6 +82,11 @@ CREATE POLICY "claim_pending_invite" ON asset_shares
   )
   WITH CHECK (
     shared_with_user_id = auth.uid()
+    AND status = 'accepted'
+    AND asset_type    = (SELECT a2.asset_type     FROM asset_shares a2 WHERE a2.id = asset_shares.id)
+    AND asset_id      = (SELECT a2.asset_id       FROM asset_shares a2 WHERE a2.id = asset_shares.id)
+    AND owner_user_id = (SELECT a2.owner_user_id  FROM asset_shares a2 WHERE a2.id = asset_shares.id)
+    AND invite_email  = (SELECT a2.invite_email   FROM asset_shares a2 WHERE a2.id = asset_shares.id)
   );
 
 -- Invitee can delete (decline / leave) their own shares
@@ -126,13 +129,19 @@ CREATE POLICY "shared_vehicle_tasks_select" ON maintenance_tasks
 DROP POLICY IF EXISTS "shared_vehicle_tasks_insert" ON maintenance_tasks;
 CREATE POLICY "shared_vehicle_tasks_insert" ON maintenance_tasks
   FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = maintenance_tasks.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+    user_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = maintenance_tasks.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 DROP POLICY IF EXISTS "shared_vehicle_tasks_update" ON maintenance_tasks;
 CREATE POLICY "shared_vehicle_tasks_update" ON maintenance_tasks
-  FOR UPDATE USING (
+  FOR UPDATE
+  USING (
     EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = maintenance_tasks.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+  )
+  WITH CHECK (
+    user_id = (SELECT mt2.user_id FROM maintenance_tasks mt2 WHERE mt2.id = maintenance_tasks.id)
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = maintenance_tasks.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 -- 5. service_logs — shared member read + write
@@ -145,7 +154,8 @@ CREATE POLICY "shared_vehicle_service_logs_select" ON service_logs
 DROP POLICY IF EXISTS "shared_vehicle_service_logs_insert" ON service_logs;
 CREATE POLICY "shared_vehicle_service_logs_insert" ON service_logs
   FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = service_logs.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+    user_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = service_logs.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 -- 6. mileage_logs — shared member read + write
@@ -158,7 +168,8 @@ CREATE POLICY "shared_vehicle_mileage_select" ON mileage_logs
 DROP POLICY IF EXISTS "shared_vehicle_mileage_insert" ON mileage_logs;
 CREATE POLICY "shared_vehicle_mileage_insert" ON mileage_logs
   FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = mileage_logs.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+    user_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'vehicle' AND asset_id = mileage_logs.vehicle_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 -- 7. home_maintenance_tasks — shared member read + write
@@ -171,13 +182,19 @@ CREATE POLICY "shared_home_tasks_select" ON home_maintenance_tasks
 DROP POLICY IF EXISTS "shared_home_tasks_insert" ON home_maintenance_tasks;
 CREATE POLICY "shared_home_tasks_insert" ON home_maintenance_tasks
   FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_maintenance_tasks.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+    user_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_maintenance_tasks.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 DROP POLICY IF EXISTS "shared_home_tasks_update" ON home_maintenance_tasks;
 CREATE POLICY "shared_home_tasks_update" ON home_maintenance_tasks
-  FOR UPDATE USING (
+  FOR UPDATE
+  USING (
     EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_maintenance_tasks.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+  )
+  WITH CHECK (
+    user_id = (SELECT hmt2.user_id FROM home_maintenance_tasks hmt2 WHERE hmt2.id = home_maintenance_tasks.id)
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_maintenance_tasks.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
 -- 8. home_service_logs — shared member read + write (assumes home_id column exists)
@@ -190,13 +207,104 @@ CREATE POLICY "shared_home_service_logs_select" ON home_service_logs
 DROP POLICY IF EXISTS "shared_home_service_logs_insert" ON home_service_logs;
 CREATE POLICY "shared_home_service_logs_insert" ON home_service_logs
   FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_service_logs.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
+    user_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_service_logs.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
--- 9. Allow shared members to update vehicles — mileage fields ONLY.
---    Supabase RLS cannot restrict which columns are written via policy alone,
---    so we enforce this at the app level (only current_mileage + mileage_updated_at
---    are ever written by shared users). The WITH CHECK re-verifies the share is valid.
+-- 9. Shared-member vehicle updates — mileage fields ONLY.
+--
+--    Supabase RLS cannot restrict individual columns, so column-level enforcement
+--    is handled by the trigger function below (enforce_shared_vehicle_mileage_only).
+--    The RLS policy here only gates who may attempt the update at all; the trigger
+--    then rejects any update that touches a non-mileage column for non-owners.
+--    This approach is future-proof: adding a new column to vehicles automatically
+--    makes it immutable for shared users without any policy change.
+
+-- Trigger function: rejects shared-user updates that touch non-mileage columns.
+-- IMPORTANT: We compare auth.uid() against OLD.user_id (the actual pre-update owner),
+-- NOT NEW.user_id. Comparing against NEW.user_id would allow an attacker to bypass
+-- the check by setting NEW.user_id = auth.uid() — the trigger must key off the
+-- existing owner, which the attacker cannot control.
+CREATE OR REPLACE FUNCTION enforce_shared_vehicle_mileage_only()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  -- Only enforce restrictions when the caller is NOT the actual (pre-update) vehicle owner.
+  IF auth.uid() IS NOT DISTINCT FROM OLD.user_id THEN
+    RETURN NEW;
+  END IF;
+
+  -- For shared users, every column except current_mileage and mileage_updated_at
+  -- must remain identical to its pre-update value.
+  IF
+    OLD.user_id                    IS DISTINCT FROM NEW.user_id                    OR
+    OLD.make                       IS DISTINCT FROM NEW.make                       OR
+    OLD.model                      IS DISTINCT FROM NEW.model                      OR
+    OLD.year                       IS DISTINCT FROM NEW.year                       OR
+    OLD.trim                       IS DISTINCT FROM NEW.trim                       OR
+    OLD.drivetrain                 IS DISTINCT FROM NEW.drivetrain                 OR
+    OLD.is_turbo                   IS DISTINCT FROM NEW.is_turbo                   OR
+    OLD.engine                     IS DISTINCT FROM NEW.engine                     OR
+    OLD.color                      IS DISTINCT FROM NEW.color                      OR
+    OLD.nickname                   IS DISTINCT FROM NEW.nickname                   OR
+    OLD.oil_brand                  IS DISTINCT FROM NEW.oil_brand                  OR
+    OLD.oil_type                   IS DISTINCT FROM NEW.oil_type                   OR
+    OLD.oil_viscosity              IS DISTINCT FROM NEW.oil_viscosity              OR
+    OLD.tire_brand                 IS DISTINCT FROM NEW.tire_brand                 OR
+    OLD.tire_size                  IS DISTINCT FROM NEW.tire_size                  OR
+    OLD.tires_installed_at_mileage IS DISTINCT FROM NEW.tires_installed_at_mileage OR
+    OLD.accessories                IS DISTINCT FROM NEW.accessories                OR
+    OLD.using_defaults             IS DISTINCT FROM NEW.using_defaults             OR
+    OLD.avg_miles_per_month        IS DISTINCT FROM NEW.avg_miles_per_month        OR
+    OLD.mileage_log_count          IS DISTINCT FROM NEW.mileage_log_count          OR
+    OLD.created_at                 IS DISTINCT FROM NEW.created_at
+  THEN
+    RAISE EXCEPTION 'Shared users may only update mileage fields (current_mileage, mileage_updated_at) on a vehicle.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS shared_vehicle_mileage_only_trigger ON vehicles;
+CREATE TRIGGER shared_vehicle_mileage_only_trigger
+  BEFORE UPDATE ON vehicles
+  FOR EACH ROW EXECUTE FUNCTION enforce_shared_vehicle_mileage_only();
+
+-- RESTRICTIVE policy: vehicles.user_id must never change for any UPDATE, by anyone.
+-- Because permissive policy WITH CHECK clauses are OR-combined in Postgres, a shared
+-- user could satisfy the base owner policy's WITH CHECK by setting NEW.user_id to
+-- their own auth.uid(). A RESTRICTIVE policy is AND-combined with all permissive
+-- policies, making this invariant mandatory regardless of which permissive path fires.
+DROP POLICY IF EXISTS "vehicles_user_id_immutable" ON vehicles;
+CREATE POLICY "vehicles_user_id_immutable" ON vehicles
+  AS RESTRICTIVE
+  FOR UPDATE
+  WITH CHECK (
+    user_id = (SELECT v2.user_id FROM vehicles v2 WHERE v2.id = vehicles.id)
+  );
+
+-- RESTRICTIVE policy: maintenance_tasks.user_id must never change for any UPDATE.
+-- Same OR-combination bypass exists in the base task owner policy.
+DROP POLICY IF EXISTS "maintenance_tasks_user_id_immutable" ON maintenance_tasks;
+CREATE POLICY "maintenance_tasks_user_id_immutable" ON maintenance_tasks
+  AS RESTRICTIVE
+  FOR UPDATE
+  WITH CHECK (
+    user_id = (SELECT mt.user_id FROM maintenance_tasks mt WHERE mt.id = maintenance_tasks.id)
+  );
+
+-- RESTRICTIVE policy: home_maintenance_tasks.user_id must never change for any UPDATE.
+DROP POLICY IF EXISTS "home_maintenance_tasks_user_id_immutable" ON home_maintenance_tasks;
+CREATE POLICY "home_maintenance_tasks_user_id_immutable" ON home_maintenance_tasks
+  AS RESTRICTIVE
+  FOR UPDATE
+  WITH CHECK (
+    user_id = (SELECT hmt.user_id FROM home_maintenance_tasks hmt WHERE hmt.id = home_maintenance_tasks.id)
+  );
+
+-- RLS policy: gates which rows a shared user may attempt to update.
+-- Column-level enforcement is handled by the trigger above.
+-- Ownership immutability is enforced by the RESTRICTIVE policy above.
 DROP POLICY IF EXISTS "shared_vehicle_update" ON vehicles;
 CREATE POLICY "shared_vehicle_update" ON vehicles
   FOR UPDATE
@@ -210,9 +318,7 @@ CREATE POLICY "shared_vehicle_update" ON vehicles
     )
   )
   WITH CHECK (
-    -- Prevent ownership reassignment: user_id must remain unchanged
-    user_id = (SELECT user_id FROM vehicles v2 WHERE v2.id = vehicles.id)
-    AND EXISTS (
+    EXISTS (
       SELECT 1 FROM asset_shares
       WHERE asset_type = 'vehicle'
         AND asset_id = vehicles.id
