@@ -34,6 +34,8 @@ export default function App() {
   const [pendingInvites, setPendingInvites] = useState([]);
   const [inviteLoading, setInviteLoading] = useState(null);
 
+  const [showWelcome, setShowWelcome] = useState(false);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -313,6 +315,7 @@ export default function App() {
     if (pendingVehicle?.id) {
       await loadTasksForVehicle(pendingVehicle.id);
     }
+    const isFirstEver = allVehicles.length === 0 && allHomes.length === 0;
     const newVehicles = allVehicles.some(v => v.id === pendingVehicle?.id)
       ? allVehicles
       : [pendingVehicle, ...allVehicles];
@@ -320,6 +323,9 @@ export default function App() {
     setActiveVehicleId(pendingVehicle?.id);
     setPendingVehicle(null);
     routeToScreen(newVehicles, allHomes);
+    if (isFirstEver && !localStorage.getItem("mb_welcome_shown")) {
+      setShowWelcome(true);
+    }
   };
 
   const handleVehicleUpdate = (updated) => {
@@ -336,6 +342,7 @@ export default function App() {
     if (pendingHome?.id) {
       await loadTasksForHome(pendingHome.id);
     }
+    const isFirstEver = allVehicles.length === 0 && allHomes.length === 0;
     const newHomes = allHomes.some(h => h.id === pendingHome?.id)
       ? allHomes
       : [pendingHome, ...allHomes];
@@ -343,6 +350,9 @@ export default function App() {
     setActiveHomeId(pendingHome?.id);
     setPendingHome(null);
     routeToScreen(allVehicles, newHomes);
+    if (isFirstEver && !localStorage.getItem("mb_welcome_shown")) {
+      setShowWelcome(true);
+    }
   };
 
   const handleHomeUpdate = (updated) => {
@@ -590,6 +600,47 @@ export default function App() {
           onVehicleDeleted={handleVehicleDeleted}
           onHomeDeleted={handleHomeDeleted}
         />
+      )}
+      {showWelcome && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 1000, padding: 24, boxSizing: "border-box",
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 20, padding: "32px 24px 28px",
+            maxWidth: 400, width: "100%", textAlign: "center",
+            boxShadow: "0 8px 40px rgba(0,0,0,0.18)", fontFamily: "'DM Sans', system-ui, sans-serif",
+          }}>
+            <div style={{ fontSize: 52, marginBottom: 16 }}>🛠️</div>
+            <h2 style={{
+              fontSize: "1.4rem", fontWeight: 800, color: "#1A1D23",
+              margin: "0 0 14px", lineHeight: 1.2,
+            }}>
+              Welcome to MaintenanceBuddy!
+            </h2>
+            <p style={{
+              fontSize: "0.92rem", color: "#4B5261", lineHeight: 1.65,
+              margin: "0 0 28px",
+            }}>
+              This may feel overwhelming at first — and that's okay. Rome wasn't built in a day. Work through the list as it makes sense, and the more you update the app, the smarter Buddy gets at looking out for you.
+            </p>
+            <button
+              onClick={() => {
+                localStorage.setItem("mb_welcome_shown", "true");
+                setShowWelcome(false);
+              }}
+              style={{
+                width: "100%", padding: "14px", border: "none", borderRadius: 12,
+                background: "#FF7A35", color: "#fff",
+                fontSize: "1rem", fontWeight: 700, cursor: "pointer",
+                fontFamily: "'DM Sans', system-ui, sans-serif",
+              }}
+            >
+              Got it, let's go! →
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

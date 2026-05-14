@@ -268,7 +268,15 @@ export default function HomeDashboard({
       .select("*")
       .eq("home_id", homeData.id)
       .eq("status", "active");
-    if (refreshed) onHomeTasksUpdate(refreshed);
+    if (refreshed) {
+      const seen = new Set();
+      const deduped = refreshed.filter(t => {
+        const key = t.name?.toLowerCase().trim();
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      });
+      onHomeTasksUpdate(deduped);
+    }
     if (logTask?.id) setTaskLogs(prev => ({ ...prev, [logTask.id]: undefined }));
     setLogTask(null);
   };
