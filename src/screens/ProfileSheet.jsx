@@ -221,13 +221,24 @@ export default function ProfileSheet({
       return;
     }
 
-    const { error } = await supabase.from("asset_shares").insert({
+    const ownerDisplayName = profile?.full_name?.split(" ")[0]
+      || session.user.user_metadata?.name?.split(" ")[0]
+      || session.user.email?.split("@")[0]
+      || null;
+
+    const basePayload = {
       asset_type: sharingAsset.type,
       asset_id: sharingAsset.id,
       owner_user_id: session.user.id,
       invite_email: email,
       status: "pending",
-    });
+    };
+
+    // Try with owner_name first; fall back without it if the column doesn't exist yet.
+    let { error } = await supabase.from("asset_shares").insert({ ...basePayload, owner_name: ownerDisplayName });
+    if (error?.message?.includes("owner_name")) {
+      ({ error } = await supabase.from("asset_shares").insert(basePayload));
+    }
 
     if (error) {
       setShareError(error.message || "Something went wrong. Please try again.");

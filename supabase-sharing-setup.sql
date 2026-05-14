@@ -2,6 +2,16 @@
 -- Run this in your Supabase SQL Editor to enable shared asset access.
 -- Safe to run multiple times (uses IF NOT EXISTS / OR REPLACE).
 
+-- 0. Allow any signed-in user to read other users' profiles (name only).
+--    Without this, the invited party sees "Someone" instead of the owner's name.
+DROP POLICY IF EXISTS "profiles_read_authenticated" ON profiles;
+CREATE POLICY "profiles_read_authenticated" ON profiles
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+-- Store the owner's display name in the share record so it's always available
+-- even if the profiles policy is not yet applied.
+ALTER TABLE asset_shares ADD COLUMN IF NOT EXISTS owner_name text;
+
 -- 1. Create asset_shares table
 CREATE TABLE IF NOT EXISTS asset_shares (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),

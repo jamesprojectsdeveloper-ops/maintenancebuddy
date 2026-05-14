@@ -297,6 +297,16 @@ export default function HomeDashboard({
                 : `${homeData?.year_built ? `${homeData.year_built} ` : ""}${homeData?.home_type === "single_family" ? "Home" : homeData?.home_type === "condo" ? "Condo" : homeData?.home_type === "townhouse" ? "Townhouse" : "Home"}${homeData?.state ? ` · ${homeData.state}` : ""}`
               }
             </div>
+            {homeData?._sharedByName && (
+              <span style={{
+                fontSize: "0.7rem", fontWeight: 600, color: C.green,
+                background: "#E8F5EF", border: `1px solid #B2DEC8`,
+                borderRadius: 20, padding: "2px 8px", flexShrink: 0,
+                whiteSpace: "nowrap",
+              }}>
+                Shared by {homeData._sharedByName}
+              </span>
+            )}
             {!homeData?._sharedByName && (
               <button onClick={() => setShowEdit(true)} style={{
                 background: "none", border: "none", cursor: "pointer",

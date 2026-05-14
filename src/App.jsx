@@ -149,6 +149,33 @@ export default function App() {
       vehicles = vehiclesRes.data || [];
       homes    = homesRes.data   || [];
       prof     = profRes.data    || null;
+
+      // Auto-populate profile name from auth metadata if not already set.
+      // This ensures the owner's name is always available for shared-asset lookups.
+      const authName = sess.user.user_metadata?.full_name
+        || sess.user.user_metadata?.name
+        || null;
+      if (authName && !prof?.full_name) {
+        const { data: upserted } = await supabase
+          .from("profiles")
+          .upsert({ id: sess.user.id, full_name: authName }, { onConflict: "id" })
+          .select().maybeSingle();
+        if (upserted) prof = upserted;
+      }
+
+      // Backfill owner_name on any existing share records this user created
+      // that are missing the name (created before this field was added).
+      const displayName = prof?.full_name?.split(" ")[0]
+        || authName?.split(" ")[0]
+        || null;
+      if (displayName) {
+        supabase
+          .from("asset_shares")
+          .update({ owner_name: displayName })
+          .eq("owner_user_id", sess.user.id)
+          .is("owner_name", null)
+          .then(() => {});
+      }
     } catch { /* partial failure */ }
 
     // Step 3: Load accepted shared assets
@@ -172,11 +199,14 @@ export default function App() {
 
         const ownerMap = {};
         (ownRes.data || []).forEach(p => {
-          ownerMap[p.id] = p.full_name?.split(" ")[0] || "Someone";
+          if (p.full_name) ownerMap[p.id] = p.full_name.split(" ")[0];
         });
         const shareOwnerMap = {};
         acceptedShares.forEach(s => {
-          shareOwnerMap[s.asset_id] = ownerMap[s.owner_user_id] || "Someone";
+          shareOwnerMap[s.asset_id] =
+            ownerMap[s.owner_user_id]
+            || s.owner_name
+            || "Someone";
         });
 
         vehicles = [

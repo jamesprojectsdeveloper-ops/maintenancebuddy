@@ -358,6 +358,16 @@ export default function Dashboard({
             <div style={{ fontSize: "1.25rem", fontWeight: 700, color: C.textPrimary, lineHeight: 1.2 }}>
               🚗 {vehicleData?.nickname || `${vehicleData?.year} ${vehicleData?.make} ${vehicleData?.model}`}
             </div>
+            {vehicleData?._sharedByName && (
+              <span style={{
+                fontSize: "0.7rem", fontWeight: 600, color: C.orange,
+                background: "#FFF0E8", border: `1px solid #FFD5BC`,
+                borderRadius: 20, padding: "2px 8px", flexShrink: 0,
+                whiteSpace: "nowrap",
+              }}>
+                Shared by {vehicleData._sharedByName}
+              </span>
+            )}
             {!vehicleData?._sharedByName && (
               <button onClick={() => setShowEdit(true)} style={{
                 background: "none", border: "none", cursor: "pointer",
