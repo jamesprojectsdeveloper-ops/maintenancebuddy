@@ -2,9 +2,12 @@
   "name": "maintenancebuddy",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "dependencies": {
     "@replit/connectors-sdk": "^0.4.0",
     "@supabase/supabase-js": "^2.105.4",
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^3.0.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
