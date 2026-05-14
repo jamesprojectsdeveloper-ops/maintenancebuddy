@@ -71,8 +71,9 @@ CREATE POLICY "see_pending_by_email" ON asset_shares
   );
 
 -- Allow a user to claim a pending invite sent to their email.
--- WITH CHECK locks every immutable field to its original DB value so the claimant
--- cannot pivot to a different asset, change ownership, or escalate their status.
+-- Immutability of asset_type, asset_id, owner_user_id, invite_email is enforced
+-- by the trigger enforce_asset_share_claim_only (below) to avoid the self-referential
+-- subquery pattern which causes "infinite recursion detected in policy" in Postgres.
 DROP POLICY IF EXISTS "claim_pending_invite" ON asset_shares;
 CREATE POLICY "claim_pending_invite" ON asset_shares
   FOR UPDATE
@@ -83,10 +84,7 @@ CREATE POLICY "claim_pending_invite" ON asset_shares
   WITH CHECK (
     shared_with_user_id = auth.uid()
     AND status = 'accepted'
-    AND asset_type    = (SELECT a2.asset_type     FROM asset_shares a2 WHERE a2.id = asset_shares.id)
-    AND asset_id      = (SELECT a2.asset_id       FROM asset_shares a2 WHERE a2.id = asset_shares.id)
-    AND owner_user_id = (SELECT a2.owner_user_id  FROM asset_shares a2 WHERE a2.id = asset_shares.id)
-    AND invite_email  = (SELECT a2.invite_email   FROM asset_shares a2 WHERE a2.id = asset_shares.id)
+    AND invite_email = auth.email()
   );
 
 -- Invitee can delete (decline / leave) their own shares
@@ -298,6 +296,38 @@ CREATE POLICY "shared_vehicle_update" ON vehicles
         AND status = 'accepted'
     )
   );
+
+-- Trigger: prevent claimants from modifying immutable fields on asset_shares rows.
+-- This replaces the self-referential subquery approach (which causes infinite recursion)
+-- by enforcing field immutability at the trigger level instead of inside the RLS policy.
+CREATE OR REPLACE FUNCTION enforce_asset_share_claim_only()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  -- Owners managing their own shares are unrestricted.
+  IF auth.uid() IS NOT DISTINCT FROM OLD.owner_user_id THEN
+    RETURN NEW;
+  END IF;
+
+  -- Claimants may only update shared_with_user_id and status.
+  -- All other fields must remain identical to their pre-update values.
+  IF
+    OLD.asset_type    IS DISTINCT FROM NEW.asset_type    OR
+    OLD.asset_id      IS DISTINCT FROM NEW.asset_id      OR
+    OLD.owner_user_id IS DISTINCT FROM NEW.owner_user_id OR
+    OLD.invite_email  IS DISTINCT FROM NEW.invite_email  OR
+    OLD.created_at    IS DISTINCT FROM NEW.created_at
+  THEN
+    RAISE EXCEPTION 'You may only set shared_with_user_id and status when claiming an invite.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS asset_share_claim_only_trigger ON asset_shares;
+CREATE TRIGGER asset_share_claim_only_trigger
+  BEFORE UPDATE ON asset_shares
+  FOR EACH ROW EXECUTE FUNCTION enforce_asset_share_claim_only();
 
 -- 10. Allow shared members to insert mileage_logs (needed for odometer update)
 -- Note: the base "Users can manage their own mileage logs" policy only matches user_id = auth.uid()
