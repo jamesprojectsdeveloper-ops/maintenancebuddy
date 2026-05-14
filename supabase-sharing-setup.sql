@@ -2,11 +2,32 @@
 -- Run this in your Supabase SQL Editor to enable shared asset access.
 -- Safe to run multiple times (uses IF NOT EXISTS / OR REPLACE).
 
--- 0. Allow any signed-in user to read other users' profiles (name only).
---    Without this, the invited party sees "Someone" instead of the owner's name.
+-- 0. Allow a user to read another user's profile ONLY if they share an asset together.
+--    This is least-privilege: you can see the name of someone who shared with you (or vice versa),
+--    but you cannot enumerate unrelated users' profiles.
 DROP POLICY IF EXISTS "profiles_read_authenticated" ON profiles;
-CREATE POLICY "profiles_read_authenticated" ON profiles
-  FOR SELECT USING (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "profiles_read_shared_peers" ON profiles;
+CREATE POLICY "profiles_read_shared_peers" ON profiles
+  FOR SELECT USING (
+    -- Always allow reading your own profile
+    id = auth.uid()
+    OR
+    -- Allow reading the profile of someone who shared an asset with you
+    EXISTS (
+      SELECT 1 FROM asset_shares
+      WHERE owner_user_id = profiles.id
+        AND shared_with_user_id = auth.uid()
+        AND status = 'accepted'
+    )
+    OR
+    -- Allow reading the profile of someone you shared an asset with
+    EXISTS (
+      SELECT 1 FROM asset_shares
+      WHERE shared_with_user_id = profiles.id
+        AND owner_user_id = auth.uid()
+        AND status IN ('pending', 'accepted')
+    )
+  );
 
 -- Store the owner's display name in the share record so it's always available
 -- even if the profiles policy is not yet applied.
@@ -172,7 +193,10 @@ CREATE POLICY "shared_home_service_logs_insert" ON home_service_logs
     EXISTS (SELECT 1 FROM asset_shares WHERE asset_type = 'home' AND asset_id = home_service_logs.home_id AND shared_with_user_id = auth.uid() AND status = 'accepted')
   );
 
--- 9. Allow shared members to update vehicles (mileage updates)
+-- 9. Allow shared members to update vehicles — mileage fields ONLY.
+--    Supabase RLS cannot restrict which columns are written via policy alone,
+--    so we enforce this at the app level (only current_mileage + mileage_updated_at
+--    are ever written by shared users). The WITH CHECK re-verifies the share is valid.
 DROP POLICY IF EXISTS "shared_vehicle_update" ON vehicles;
 CREATE POLICY "shared_vehicle_update" ON vehicles
   FOR UPDATE
@@ -186,7 +210,9 @@ CREATE POLICY "shared_vehicle_update" ON vehicles
     )
   )
   WITH CHECK (
-    EXISTS (
+    -- Prevent ownership reassignment: user_id must remain unchanged
+    user_id = (SELECT user_id FROM vehicles v2 WHERE v2.id = vehicles.id)
+    AND EXISTS (
       SELECT 1 FROM asset_shares
       WHERE asset_type = 'vehicle'
         AND asset_id = vehicles.id
